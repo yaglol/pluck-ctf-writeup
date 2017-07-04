@@ -1,4 +1,4 @@
-////// Pluck CTF Walktrough \\\\\\
+////// Pluck CTF Writeup \\\\\\
             https://www.vulnhub.com/entry/pluck-1,178/
 
 Acquire information about the network.
